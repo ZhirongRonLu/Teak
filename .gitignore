@@ -12,6 +12,11 @@ __pycache__/
 build/
 dist/
 
+# Secrets
+.env
+.env.*
+!.env.example
+
 # Teak per-project state (only ignore in the tool's own repo;
 # downstream projects commit `.teak/brain/` intentionally)
 /.teak/
