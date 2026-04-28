@@ -19,8 +19,8 @@ class TeakConfig:
     brain_dir: Path
     db_path: Path
     templates_dir: Path
-    default_model: str = "anthropic/claude-sonnet-4-6"
-    planner_model: str = "anthropic/claude-haiku-4-5-20251001"
+    default_model: str = "anthropic/claude-haiku-4-5"
+    planner_model: str = "anthropic/claude-haiku-4-5"
     session_budget_usd: Optional[float] = None
     languages: tuple[str, ...] = field(
         default_factory=lambda: ("python", "typescript", "javascript", "rust", "go")

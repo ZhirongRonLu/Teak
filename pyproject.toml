@@ -1,6 +1,6 @@
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "teak"
@@ -18,17 +18,21 @@ dependencies = [
     "textual>=0.60",
     "langgraph>=0.2",
     "litellm>=1.40",
-    "tree-sitter>=0.22",
-    "tree-sitter-languages>=1.10",
-    "watchdog>=4.0",
-    "sqlite-vec>=0.1.1",
-    "python-patch-ng>=1.17",
     "GitPython>=3.1",
     "pydantic>=2.7",
     "platformdirs>=4.2",
 ]
 
 [project.optional-dependencies]
+context = [
+    "tree-sitter>=0.22",
+    "tree-sitter-language-pack>=0.2",
+    "watchdog>=4.0",
+    "sqlite-vec>=0.1.1",
+]
+patch = [
+    "patch-ng>=1.17",
+]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
@@ -39,8 +43,11 @@ dev = [
 [project.scripts]
 teak = "teak.cli:app"
 
-[tool.hatch.build.targets.wheel]
-packages = ["src/teak"]
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+teak = ["prompts/*.md"]
 
 [tool.ruff]
 line-length = 100

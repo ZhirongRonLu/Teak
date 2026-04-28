@@ -12,6 +12,7 @@ from teak.brain.manager import BrainManager
 from teak.config import TeakConfig, load_config
 from teak.flow.graph import run_session
 from teak.session.handoff import generate_handoff, load_last_handoff
+from teak.vcs.repo import DirtyWorkingTree
 
 app = typer.Typer(
     name="teak",
@@ -50,7 +51,7 @@ def chat(
     budget: Optional[float] = typer.Option(None, help="Per-session token budget in USD."),
     model: Optional[str] = typer.Option(None, help="Override LLM model id."),
 ) -> None:
-    """Start an interactive Teak session."""
+    """Start an interactive Teak session (QuickMode — not in Phase 0)."""
     config = load_config()
     raise NotImplementedError(run_session, config, budget, model)
 
@@ -63,7 +64,25 @@ def plan(
 ) -> None:
     """Generate, approve, and execute a plan for `task`."""
     config = load_config()
-    raise NotImplementedError(run_session, config, task, budget, model)
+    try:
+        state = run_session(config, task=task, budget_usd=budget, model=model)
+    except DirtyWorkingTree as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(code=1)
+
+    console.print(f"\n[green]Session complete on branch [bold]{state.branch}[/bold][/green]")
+    console.print(
+        f"Spent ${state.cost_usd:.4f} "
+        f"({state.tokens_in} in / {state.tokens_out} out, "
+        f"{len(state.diffs)} commits)"
+    )
+    if state.diffs:
+        console.print(
+            "\nReview with: [dim]git log "
+            f"{state.branch}[/dim]\n"
+            "Merge with:  [dim]git checkout <your-branch> && git merge "
+            f"{state.branch}[/dim]"
+        )
 
 
 @app.command()
