@@ -8,7 +8,7 @@ from teak.flow.state import PlanStep, SessionState
 from teak.llm.client import LLMClient
 
 
-def _parse_plan(text: str) -> tuple[list[PlanStep], str]:
+def parse_plan(text: str) -> tuple[list[PlanStep], str]:
     data = _extract_json(text)
     raw_steps = data.get("steps", [])
     if not isinstance(raw_steps, list):
@@ -51,7 +51,7 @@ def make_node(client: LLMClient):
             {"role": "user", "content": f"Task: {state.task}"},
         ]
         response = client.complete(messages, json_mode=True)
-        steps, _notes = _parse_plan(response.text)
+        steps, _notes = parse_plan(response.text)
         return {
             "plan": steps,
             "tokens_in": state.tokens_in + response.tokens_in,
