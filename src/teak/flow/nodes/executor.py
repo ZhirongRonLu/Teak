@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from rich.console import Console
 
 from teak import prompts
+from teak.brain.manager import BrainManager
 from teak.flow.state import PlanStep, SessionState
 from teak.llm.client import LLMClient
 from teak.vcs.repo import SessionRepo
@@ -75,8 +76,15 @@ def _execute_step(
     )
 
 
-def make_node(client: LLMClient, repo: SessionRepo, project_root: Path):
-    system_prompt = prompts.load("executor")
+def make_node(
+    client: LLMClient,
+    repo: SessionRepo,
+    project_root: Path,
+    brain: Optional[BrainManager] = None,
+):
+    executor_prompt = prompts.load("executor")
+    brain_prompt = brain.cached_system_prompt() if brain and brain.exists() else ""
+    system_prompt = "\n\n".join(p for p in (brain_prompt, executor_prompt) if p)
 
     def run(state: SessionState) -> dict:
         diffs: list[str] = list(state.diffs)

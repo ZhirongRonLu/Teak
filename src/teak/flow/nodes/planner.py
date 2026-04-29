@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Optional
 
 from teak import prompts
+from teak.brain.manager import BrainManager
 from teak.flow.state import PlanStep, SessionState
 from teak.llm.client import LLMClient
 
@@ -42,12 +43,14 @@ def _extract_json(text: str) -> dict[str, Any]:
     raise ValueError("planner response was not valid JSON")
 
 
-def make_node(client: LLMClient):
-    system_prompt = prompts.load("planner")
+def make_node(client: LLMClient, brain: Optional[BrainManager] = None):
+    planner_prompt = prompts.load("planner")
+    brain_prompt = brain.cached_system_prompt() if brain and brain.exists() else ""
 
     def run(state: SessionState) -> dict:
+        system_parts = [p for p in (brain_prompt, planner_prompt) if p]
         messages = [
-            {"role": "system", "content": system_prompt},
+            {"role": "system", "content": "\n\n".join(system_parts)},
             {"role": "user", "content": f"Task: {state.task}"},
         ]
         response = client.complete(messages, json_mode=True)

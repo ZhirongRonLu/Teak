@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import os
+import subprocess
 from pathlib import Path
 from typing import Optional
 
 import typer
 from rich.console import Console
+from rich.markdown import Markdown
+from rich.panel import Panel
 
 from teak import __version__
 from teak.brain.bootstrapper import bootstrap_brain
-from teak.brain.manager import BrainManager
+from teak.brain.manager import BRAIN_FILES, BrainManager
+from teak.brain.templates import list_templates
 from teak.config import TeakConfig, load_config
 from teak.flow.graph import run_session
 from teak.session.handoff import generate_handoff, load_last_handoff
@@ -40,10 +45,58 @@ def main(
 @app.command()
 def init(
     path: Path = typer.Argument(Path.cwd(), help="Project root."),
-    template: Optional[str] = typer.Option(None, help="Brain template to seed from."),
+    template: Optional[str] = typer.Option(
+        None,
+        "--template",
+        help="Brain template to seed from (skip the LLM survey).",
+    ),
+    list_templates_flag: bool = typer.Option(
+        False,
+        "--list-templates",
+        help="List available built-in brain templates and exit.",
+    ),
 ) -> None:
     """Bootstrap `.teak/brain/` for this project."""
-    raise NotImplementedError(bootstrap_brain)
+    if list_templates_flag:
+        for tpl in list_templates():
+            console.print(f"[bold]{tpl.name}[/bold] — {tpl.description}")
+        raise typer.Exit()
+
+    project_root = path.resolve()
+    if not project_root.is_dir():
+        console.print(f"[red]not a directory: {project_root}[/red]")
+        raise typer.Exit(code=1)
+
+    existing = TeakConfig.for_project(project_root)
+    if existing.brain_dir.is_dir() and any(existing.brain_dir.iterdir()):
+        console.print(
+            f"[yellow]brain already exists at {existing.brain_dir}; "
+            "delete it or edit it with `teak brain --edit`[/yellow]"
+        )
+        raise typer.Exit(code=1)
+
+    if template:
+        console.print(f"Installing brain template [bold]{template}[/bold]…")
+    else:
+        console.print("Surveying codebase and drafting brain (≈30s)…")
+
+    try:
+        manager = bootstrap_brain(project_root, template=template)
+    except KeyError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(code=1)
+    except Exception as e:
+        console.print(f"[red]bootstrap failed: {e}[/red]")
+        raise typer.Exit(code=1)
+
+    console.print(
+        f"[green]Brain initialized at[/green] [bold]{manager.config.brain_dir}[/bold]"
+    )
+    for line in manager.summary_lines():
+        console.print(f"  • {line}")
+    console.print(
+        "\nReview drafts with [dim]teak brain[/dim] — edit with [dim]teak brain --edit[/dim]."
+    )
 
 
 @app.command()
@@ -87,11 +140,25 @@ def plan(
 
 @app.command()
 def brain(
-    edit: bool = typer.Option(False, "--edit", help="Open brain files for editing."),
+    edit: bool = typer.Option(False, "--edit", help="Open brain files in $EDITOR."),
 ) -> None:
     """View or edit the Project Brain."""
     manager = BrainManager.for_cwd()
-    raise NotImplementedError(manager, edit)
+    if not manager.exists():
+        console.print(
+            "[yellow]No brain found.[/yellow] Run [dim]teak init[/dim] to create one."
+        )
+        raise typer.Exit(code=1)
+
+    if edit:
+        editor = os.environ.get("EDITOR") or os.environ.get("VISUAL") or "vi"
+        paths = [str(manager.files[name].path) for name in BRAIN_FILES]
+        subprocess.run([editor, *paths], check=False)
+        return
+
+    for name in BRAIN_FILES:
+        body = manager.files[name].read().strip() or "_(empty)_"
+        console.print(Panel(Markdown(body), title=name, border_style="cyan"))
 
 
 @app.command()

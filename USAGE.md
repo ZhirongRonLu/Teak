@@ -1,9 +1,10 @@
-# Using Teak (Phase 0)
+# Using Teak (Phase 1)
 
-Phase 0 implements the minimum coding loop: **plan → approve → execute**. The
-Project Brain, Tree-sitter RAG, prompt caching, and hard budgets land in later
-phases (see `README.md` §7). What works today is `teak plan "<task>"` against
-any git repo.
+Phase 1 adds the **Project Brain** on top of the Phase 0 plan/approve/execute
+loop. `teak init` bootstraps a brain for the project, `teak brain` shows or
+edits it, and after each `teak plan` session the agent proposes minimal brain
+updates that you approve per file. Tree-sitter RAG, prompt caching, and hard
+budgets still land in later phases (see `README.md` §7).
 
 ## Install
 
@@ -51,6 +52,22 @@ different one.
 
 ## Run
 
+### One-time: bootstrap the brain
+
+```bash
+cd <your-project>
+teak init                  # surveys the codebase, drafts brain in ~30s
+teak init --template python-cli   # or seed from a built-in starter
+teak init --list-templates        # see available starters
+teak brain                 # review the drafts
+teak brain --edit          # open all four files in $EDITOR
+```
+
+The brain lives at `.teak/brain/` (ARCHITECTURE.md, CONVENTIONS.md,
+DECISIONS.md, MEMORY.md). Commit it — it's part of the project.
+
+### Coding loop
+
 ```bash
 cd <your-project>          # must be a git repo with a clean working tree
 teak plan "add a /health endpoint that returns 200 ok"
@@ -64,7 +81,10 @@ What happens:
 4. **Execute.** For each approved step, the executor reads target files, asks
    the LLM for the new file content, writes it, and commits with
    `teak: <step title>`.
-5. **Summary.** Teak prints token usage, cost, and the session branch name.
+5. **Brain update (if a brain exists).** Teak proposes minimal updates to
+   ARCHITECTURE/CONVENTIONS/DECISIONS/MEMORY based on what changed; you
+   approve per file and the changes are committed to the session branch.
+6. **Summary.** Teak prints token usage, cost, and the session branch name.
 
 Review and merge:
 
@@ -78,15 +98,17 @@ git merge <session-branch>     # or cherry-pick the commits you want
 Reject a session entirely by deleting the branch — your working branch is
 untouched because every change lives only on the session branch.
 
-## CLI reference (Phase 0)
+## CLI reference (Phase 1)
 
 | Command | Status |
 |---|---|
-| `teak plan "<task>"` | Working — full plan/approve/execute loop |
+| `teak init [path]` | Working — survey + LLM draft, or `--template <name>` |
+| `teak init --list-templates` | Working — show built-in starters |
+| `teak brain` | Working — render brain files |
+| `teak brain --edit` | Working — opens brain in `$EDITOR` |
+| `teak plan "<task>"` | Working — plan/approve/execute, brain-aware |
 | `teak --version` | Working |
 | `teak chat` | Stub (Phase 3 — QuickMode) |
-| `teak init` | Stub (Phase 1 — Brain bootstrap) |
-| `teak brain` | Stub (Phase 1) |
 | `teak session` | Stub (Phase 3 — handoff summary) |
 | `teak status` | Stub (Phase 4 — token dashboard) |
 
