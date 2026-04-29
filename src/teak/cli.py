@@ -15,8 +15,11 @@ from teak.brain.bootstrapper import bootstrap_brain
 from teak.brain.manager import BRAIN_FILES, BrainManager
 from teak.brain.templates import list_templates
 from teak.config import TeakConfig, load_config
+from teak.context.embedder import choose_embedder
+from teak.context.indexer import Indexer
+from teak.context.storage import VectorStore
 from teak.flow.graph import run_session
-from teak.session.handoff import generate_handoff, load_last_handoff
+from teak.session.handoff import load_last_handoff
 from teak.vcs.repo import DirtyWorkingTree
 
 app = typer.Typer(
@@ -114,11 +117,47 @@ def plan(
     task: str = typer.Argument(..., help="What you want Teak to do."),
     budget: Optional[float] = typer.Option(None, help="Per-session token budget in USD."),
     model: Optional[str] = typer.Option(None, help="Override LLM model id."),
+    no_context: bool = typer.Option(
+        False,
+        "--no-context",
+        help="Skip subgraph RAG retrieval (faster start, no project context).",
+    ),
+    verify: Optional[str] = typer.Option(
+        None,
+        "--verify",
+        help='Command to run after each accepted step (e.g. "pytest -q").',
+    ),
+    auto_verify: bool = typer.Option(
+        False,
+        "--auto-verify",
+        help="Detect a default verifier command for the project (pytest / npm test / cargo test).",
+    ),
+    max_retries: int = typer.Option(
+        2, "--max-retries", help="Verifier retries per step before prompting."
+    ),
 ) -> None:
     """Generate, approve, and execute a plan for `task`."""
     config = load_config()
+
+    verifier_command = verify
+    if verifier_command is None and auto_verify:
+        from teak.flow.nodes.verifier import detect_default_command
+        verifier_command = detect_default_command(config.project_root) or None
+        if verifier_command:
+            console.print(f"[dim]auto-verify: {verifier_command}[/dim]")
+        else:
+            console.print("[yellow]auto-verify: no test runner detected[/yellow]")
+
     try:
-        state = run_session(config, task=task, budget_usd=budget, model=model)
+        state = run_session(
+            config,
+            task=task,
+            budget_usd=budget,
+            model=model,
+            use_context=not no_context,
+            verifier_command=verifier_command,
+            max_step_retries=max_retries,
+        )
     except DirtyWorkingTree as e:
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(code=1)
@@ -162,16 +201,92 @@ def brain(
 
 
 @app.command()
+def index(
+    force: bool = typer.Option(
+        False, "--force", help="Re-embed every file regardless of hash."
+    ),
+) -> None:
+    """Bootstrap (or refresh) the Tree-sitter + sqlite-vec context index."""
+    config = load_config()
+    embedder = choose_embedder()
+    store = VectorStore(config.db_path)
+    indexer = Indexer(config, store, embedder=embedder)
+    if force:
+        # Cheapest "re-embed everything" is to drop file rows so hashes mismatch.
+        with store.connect() as conn:
+            conn.execute("DELETE FROM files")
+    console.print(f"Indexing with embedder [bold]{embedder.name}[/bold] (dim {embedder.dim})…")
+    report = indexer.bootstrap()
+    stats = store.stats()
+    console.print(
+        f"[green]indexed {report['indexed']}, skipped {report['skipped']}, "
+        f"removed {report['removed']}[/green]"
+    )
+    console.print(
+        f"  files: {stats['files']}  symbols: {stats['symbols']}  "
+        f"calls: {stats['calls']}  imports: {stats['imports']}"
+    )
+
+
+@app.command()
 def session() -> None:
     """Show the last session handoff summary."""
-    raise NotImplementedError(load_last_handoff, generate_handoff)
+    config = load_config()
+    handoff = load_last_handoff(config)
+    if handoff is None:
+        console.print(
+            "[yellow]No handoff yet.[/yellow] Run [dim]teak plan[/dim] to start one."
+        )
+        raise typer.Exit(code=1)
+    console.print(
+        Panel(
+            handoff.summary,
+            title=f"{handoff.created_at} — {handoff.branch}",
+            border_style="cyan",
+        )
+    )
+    if handoff.pending:
+        console.print("[bold]Pending:[/bold]")
+        for item in handoff.pending:
+            console.print(f"  • {item}")
+    if handoff.decisions:
+        console.print("[bold]Decisions:[/bold]")
+        for item in handoff.decisions:
+            console.print(f"  • {item}")
 
 
 @app.command()
 def status() -> None:
-    """Show token usage, budget, and brain health."""
+    """Show token usage, budget, and brain/index health."""
     config: TeakConfig = load_config()
-    raise NotImplementedError(config)
+    console.print(f"[bold]Project:[/bold] {config.project_root}")
+    console.print(f"[bold]Default model:[/bold] {config.default_model}")
+
+    brain_manager = BrainManager(config)
+    if brain_manager.exists():
+        console.print("[bold]Brain:[/bold] [green]ready[/green]")
+        for line in brain_manager.summary_lines():
+            console.print(f"  • {line}")
+    else:
+        console.print(
+            "[bold]Brain:[/bold] [yellow]not initialized[/yellow] — run [dim]teak init[/dim]"
+        )
+
+    if config.db_path.exists():
+        store = VectorStore(config.db_path)
+        try:
+            stats = store.stats()
+            console.print(
+                f"[bold]Index:[/bold] {stats['files']} files, "
+                f"{stats['symbols']} symbols, {stats['calls']} call edges, "
+                f"{stats['imports']} imports"
+            )
+        except Exception as e:
+            console.print(f"[bold]Index:[/bold] [yellow]unreadable: {e}[/yellow]")
+    else:
+        console.print(
+            "[bold]Index:[/bold] [yellow]empty[/yellow] — run [dim]teak index[/dim]"
+        )
 
 
 if __name__ == "__main__":

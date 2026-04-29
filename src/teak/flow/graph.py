@@ -3,27 +3,57 @@ from __future__ import annotations
 from typing import Optional
 
 from langgraph.graph import END, START, StateGraph
+from rich.console import Console
 
 from teak.brain.manager import BrainManager
 from teak.config import TeakConfig
+from teak.context.embedder import choose_embedder
+from teak.context.indexer import Indexer
+from teak.context.rag import SubgraphRAG
+from teak.context.storage import VectorStore
 from teak.flow.nodes import brain_updater as brain_updater_node
 from teak.flow.nodes import executor as executor_node
+from teak.flow.nodes import handoff as handoff_node
 from teak.flow.nodes import human_approval as approval_node
 from teak.flow.nodes import planner as planner_node
+from teak.flow.nodes import step_review as step_review_node
+from teak.flow.nodes import verifier as verifier_node
 from teak.flow.state import Mode, SessionState
 from teak.llm.budget import BudgetTracker
 from teak.llm.client import LLMClient
+from teak.session.handoff import load_last_handoff
 from teak.vcs.repo import SessionRepo
 
-
-def _route_after_approval(state: SessionState) -> str:
-    return "executor" if state.plan else END
+_console = Console()
 
 
-def _route_after_executor(state: SessionState, *, brain_active: bool) -> str:
-    if brain_active and state.diffs:
-        return "brain_updater"
-    return END
+# ---- routing helpers --------------------------------------------------------
+
+
+def _route_after_plan_approval(state: SessionState) -> str:
+    return "step_runner" if state.plan else END
+
+
+def _route_after_step_runner(state: SessionState) -> str:
+    return "step_review"
+
+
+def _route_after_step_review(state: SessionState) -> str:
+    # last_commit_sha set ⇒ change was kept and needs verification.
+    if state.last_commit_sha:
+        return "verifier"
+    return "step_runner" if state.steps_remaining else "brain_updater"
+
+
+def _route_after_verifier(state: SessionState) -> str:
+    # If a retry is in flight (commit was reset, failure recorded), the executor
+    # runs again on the same step.
+    if not state.last_commit_sha and state.last_failure:
+        return "step_runner"
+    return "step_runner" if state.steps_remaining else "brain_updater"
+
+
+# ---- build ------------------------------------------------------------------
 
 
 def build_graph(
@@ -31,45 +61,100 @@ def build_graph(
     repo: SessionRepo,
     config: TeakConfig,
     brain: Optional[BrainManager] = None,
+    rag: Optional[SubgraphRAG] = None,
 ):
-    """Phase 1 graph:
+    """Phase 3 graph (per-step loop):
 
-        START → planner → approval → (plan empty → END | else → executor)
-                                              ↓
-                                    (brain present → brain_updater → END | else → END)
-
-    Router and Verifier nodes land in later phases.
+        START
+          → planner
+          → plan_approval
+              ├─ empty plan → END
+              └─ plan present
+                  → step_runner ⇄ step_review (reject = git reset)
+                                ⇄ verifier (fail-retry loop)
+                                → next step | brain_updater
+          → handoff
+          → END
     """
     builder = StateGraph(SessionState)
-    builder.add_node("planner", planner_node.make_node(client, brain=brain))
-    builder.add_node("approval", approval_node.make_node())
-    builder.add_node(
-        "executor",
-        executor_node.make_node(client, repo, config.project_root, brain=brain),
-    )
 
-    brain_active = brain is not None and brain.exists()
-    if brain_active:
-        builder.add_node(
-            "brain_updater", brain_updater_node.make_node(client, brain, repo)
-        )
+    builder.add_node("planner", planner_node.make_node(client, brain=brain, rag=rag))
+    builder.add_node("plan_approval", approval_node.make_node())
+    builder.add_node(
+        "step_runner",
+        executor_node.make_node(
+            client, repo, config.project_root, brain=brain, rag=rag
+        ),
+    )
+    builder.add_node("step_review", step_review_node.make_node(repo))
+    builder.add_node("verifier", verifier_node.make_node(repo, config.project_root))
+    builder.add_node(
+        "brain_updater",
+        brain_updater_node.make_node(client, brain, repo) if brain is not None else _noop_node(),
+    )
+    builder.add_node(
+        "handoff",
+        handoff_node.make_node(client, config, repo, brain=brain),
+    )
 
     builder.add_edge(START, "planner")
-    builder.add_edge("planner", "approval")
+    builder.add_edge("planner", "plan_approval")
     builder.add_conditional_edges(
-        "approval", _route_after_approval, {"executor": "executor", END: END}
+        "plan_approval",
+        _route_after_plan_approval,
+        {"step_runner": "step_runner", END: END},
     )
-    if brain_active:
-        builder.add_conditional_edges(
-            "executor",
-            lambda s: _route_after_executor(s, brain_active=True),
-            {"brain_updater": "brain_updater", END: END},
-        )
-        builder.add_edge("brain_updater", END)
-    else:
-        builder.add_edge("executor", END)
+    builder.add_conditional_edges(
+        "step_runner", _route_after_step_runner, {"step_review": "step_review"}
+    )
+    builder.add_conditional_edges(
+        "step_review",
+        _route_after_step_review,
+        {
+            "verifier": "verifier",
+            "step_runner": "step_runner",
+            "brain_updater": "brain_updater",
+        },
+    )
+    builder.add_conditional_edges(
+        "verifier",
+        _route_after_verifier,
+        {
+            "step_runner": "step_runner",
+            "brain_updater": "brain_updater",
+        },
+    )
+    builder.add_edge("brain_updater", "handoff")
+    builder.add_edge("handoff", END)
 
     return builder.compile()
+
+
+def _noop_node():
+    def run(state: SessionState) -> dict:  # noqa: ARG001
+        return {}
+
+    return run
+
+
+def _make_rag(config: TeakConfig) -> Optional[SubgraphRAG]:
+    """Bootstrap (or refresh) the index and return a ready-to-use RAG."""
+    try:
+        embedder = choose_embedder()
+        store = VectorStore(config.db_path)
+        indexer = Indexer(config, store, embedder=embedder)
+        report = indexer.bootstrap()
+        if (report["indexed"] + report["skipped"]) == 0:
+            return None
+        if report["indexed"]:
+            _console.print(
+                f"[dim]indexed {report['indexed']} file(s), "
+                f"skipped {report['skipped']}, removed {report['removed']}[/dim]"
+            )
+        return SubgraphRAG(store, embedder)
+    except Exception as e:
+        _console.print(f"[yellow]context index unavailable: {e}[/yellow]")
+        return None
 
 
 def run_session(
@@ -77,6 +162,9 @@ def run_session(
     task: Optional[str] = None,
     budget_usd: Optional[float] = None,
     model: Optional[str] = None,
+    use_context: bool = True,
+    verifier_command: Optional[str] = None,
+    max_step_retries: int = 2,
 ) -> SessionState:
     if not task:
         raise ValueError("Phase 0 requires a task; QuickMode lands in a later phase")
@@ -85,6 +173,13 @@ def run_session(
     client = LLMClient(default_model=model or config.default_model, tracker=tracker)
     repo = SessionRepo(project_root=config.project_root)
     brain = BrainManager(config)
+    rag = _make_rag(config) if use_context else None
+
+    previous = load_last_handoff(config)
+    if previous is not None:
+        _console.print(
+            f"[dim]Continuing from handoff {previous.created_at} on {previous.branch}[/dim]"
+        )
 
     branch = repo.start_session_branch()
     initial = SessionState(
@@ -92,9 +187,12 @@ def run_session(
         mode=Mode.PLAN,
         branch=branch,
         budget_usd=budget_usd,
+        verifier_command=verifier_command,
+        max_step_retries=max_step_retries,
+        previous_handoff=previous.to_prompt() if previous else "",
     )
 
-    graph = build_graph(client, repo, config, brain=brain)
+    graph = build_graph(client, repo, config, brain=brain, rag=rag)
     final = graph.invoke(initial)
 
     if isinstance(final, SessionState):

@@ -5,6 +5,7 @@ from typing import Any, Optional
 
 from teak import prompts
 from teak.brain.manager import BrainManager
+from teak.context.rag import SubgraphRAG
 from teak.flow.state import PlanStep, SessionState
 from teak.llm.client import LLMClient
 
@@ -43,15 +44,28 @@ def _extract_json(text: str) -> dict[str, Any]:
     raise ValueError("planner response was not valid JSON")
 
 
-def make_node(client: LLMClient, brain: Optional[BrainManager] = None):
+def make_node(
+    client: LLMClient,
+    brain: Optional[BrainManager] = None,
+    rag: Optional[SubgraphRAG] = None,
+    rag_token_budget: int = 600,
+):
     planner_prompt = prompts.load("planner")
     brain_prompt = brain.cached_system_prompt() if brain and brain.exists() else ""
 
     def run(state: SessionState) -> dict:
         system_parts = [p for p in (brain_prompt, planner_prompt) if p]
+        user_parts: list[str] = []
+        if state.previous_handoff:
+            user_parts.append(state.previous_handoff)
+        user_parts.append(f"Task: {state.task}")
+        if rag is not None:
+            ctx = rag.retrieve(state.task, token_budget=rag_token_budget)
+            if ctx.snippets:
+                user_parts.append(ctx.to_prompt())
         messages = [
             {"role": "system", "content": "\n\n".join(system_parts)},
-            {"role": "user", "content": f"Task: {state.task}"},
+            {"role": "user", "content": "\n\n".join(user_parts)},
         ]
         response = client.complete(messages, json_mode=True)
         steps, _notes = parse_plan(response.text)

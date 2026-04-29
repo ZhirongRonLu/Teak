@@ -38,7 +38,24 @@ class SessionState:
     cost_usd: float = 0.0
     budget_usd: Optional[float] = None
     handoff_summary: str = ""
+    previous_handoff: str = ""
+
+    # Per-step bookkeeping (Phase 3)
+    step_attempts: dict[int, int] = field(default_factory=dict)
+    last_failure: str = ""
+    last_commit_sha: str = ""
+    verifier_command: Optional[str] = None
+    max_step_retries: int = 2
 
     @property
     def over_budget(self) -> bool:
         return self.budget_usd is not None and self.cost_usd >= self.budget_usd
+
+    @property
+    def steps_remaining(self) -> bool:
+        return self.current_step < len(self.plan)
+
+    def current(self) -> Optional[PlanStep]:
+        if not self.steps_remaining:
+            return None
+        return self.plan[self.current_step]

@@ -1,10 +1,14 @@
-# Using Teak (Phase 1)
+# Using Teak (Phase 3)
 
-Phase 1 adds the **Project Brain** on top of the Phase 0 plan/approve/execute
-loop. `teak init` bootstraps a brain for the project, `teak brain` shows or
-edits it, and after each `teak plan` session the agent proposes minimal brain
-updates that you approve per file. Tree-sitter RAG, prompt caching, and hard
-budgets still land in later phases (see `README.md` §7).
+Phase 3 lights up the **full visible flow**: per-step accept/reject with
+`git reset HEAD~1` on rejection, an opt-in verifier loop that reruns the
+executor on test failure, and a **Session Handoff** that persists a
+one-paragraph summary into `.teak/teak.db` and auto-prepends it to the
+planner of the next session — zero re-explaining tax across days.
+
+Phases 0–2 still apply: Phase 0 plan/approve/execute, Phase 1 Project Brain,
+Phase 2 Tree-sitter + sqlite-vec subgraph RAG. Prompt caching and hard token
+budgets land in Phase 4.
 
 ## Install
 
@@ -81,10 +85,16 @@ What happens:
 4. **Execute.** For each approved step, the executor reads target files, asks
    the LLM for the new file content, writes it, and commits with
    `teak: <step title>`.
-5. **Brain update (if a brain exists).** Teak proposes minimal updates to
+5. **Per-step review.** After each commit, Teak shows the diff and asks
+   accept/reject. Reject = `git reset --hard HEAD~1` on the session branch.
+6. **Verify (opt-in).** With `--verify` or `--auto-verify`, Teak runs the
+   command and re-runs the executor on failure (up to `--max-retries`).
+7. **Brain update (if a brain exists).** Teak proposes minimal updates to
    ARCHITECTURE/CONVENTIONS/DECISIONS/MEMORY based on what changed; you
    approve per file and the changes are committed to the session branch.
-6. **Summary.** Teak prints token usage, cost, and the session branch name.
+8. **Handoff.** Teak generates a one-paragraph summary (with pending /
+   decisions) and persists it to `.teak/teak.db`. The next `teak plan` run
+   auto-prepends it to the planner — pick up where you left off.
 
 Review and merge:
 
@@ -98,24 +108,56 @@ git merge <session-branch>     # or cherry-pick the commits you want
 Reject a session entirely by deleting the branch — your working branch is
 untouched because every change lives only on the session branch.
 
-## CLI reference (Phase 1)
+## CLI reference (Phase 3)
 
 | Command | Status |
 |---|---|
 | `teak init [path]` | Working — survey + LLM draft, or `--template <name>` |
 | `teak init --list-templates` | Working — show built-in starters |
-| `teak brain` | Working — render brain files |
-| `teak brain --edit` | Working — opens brain in `$EDITOR` |
-| `teak plan "<task>"` | Working — plan/approve/execute, brain-aware |
+| `teak brain [--edit]` | Working — render or edit brain files |
+| `teak index [--force]` | Working — build/refresh the context index |
+| `teak status` | Working — brain + index health |
+| `teak session` | Working — show last handoff |
+| `teak plan "<task>" […]` | Working — full visible flow (per-step + verify + handoff) |
 | `teak --version` | Working |
-| `teak chat` | Stub (Phase 3 — QuickMode) |
-| `teak session` | Stub (Phase 3 — handoff summary) |
-| `teak status` | Stub (Phase 4 — token dashboard) |
+| `teak chat` | Stub (future — QuickMode) |
+
+### Context index
+
+`teak plan` automatically bootstraps the Tree-sitter + sqlite-vec index on
+first run (and is incremental thereafter — only changed files are re-parsed
+and re-embedded). To pre-warm or refresh manually:
+
+```bash
+teak index            # build/update; skips files whose hashes match
+teak index --force    # re-embed everything (after changing embedder model)
+teak status           # files / symbols / call edges / imports counts
+```
+
+### Embedder selection
+
+| Env var present | Embedder used |
+|---|---|
+| `OPENAI_API_KEY` | `text-embedding-3-small` (1536-dim) |
+| `VOYAGE_API_KEY` | `voyage-3` (1024-dim) |
+| _neither_ | local hash embedder (256-dim, no network, low quality) |
+
+Switching embedders changes the vector dimension; the index drops the vec
+table and rebuilds it on the next `teak index` run.
 
 Flags on `teak plan`:
 - `--model anthropic/<id>` — override the default model.
 - `--budget 0.50` — soft per-session budget in USD (tracked but not enforced
   until Phase 4).
+- `--no-context` — skip subgraph RAG retrieval. Faster start, no project
+  context injected into the planner/executor user messages.
+- `--verify "<cmd>"` — run `<cmd>` in the project root after each accepted
+  step. On non-zero exit, the executor is re-invoked with the failure tail
+  attached, up to `--max-retries` times.
+- `--auto-verify` — autodetect a verifier from `pyproject.toml` /
+  `package.json` / `Cargo.toml` / `go.mod`. Equivalent to passing the
+  detected command via `--verify`.
+- `--max-retries N` — verifier retries per step before prompting (default 2).
 
 ## Troubleshooting
 

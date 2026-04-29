@@ -8,6 +8,7 @@ from rich.console import Console
 
 from teak import prompts
 from teak.brain.manager import BrainManager
+from teak.context.rag import SubgraphRAG
 from teak.flow.state import PlanStep, SessionState
 from teak.llm.client import LLMClient
 from teak.vcs.repo import SessionRepo
@@ -41,15 +42,23 @@ def _write_files(project_root: Path, files: dict[str, str]) -> None:
         p.write_text(content, encoding="utf-8")
 
 
-def _execute_step(
+def execute_one_step(
     step: PlanStep,
     *,
     project_root: Path,
     client: LLMClient,
     system_prompt: str,
+    rag: Optional[SubgraphRAG] = None,
+    rag_token_budget: int = 800,
+    failure_context: str = "",
 ) -> tuple[dict[str, str], int, int, float]:
+    """Run the LLM for one plan step and return the proposed file contents.
+
+    Pure: reads target files, calls the LLM, returns (files, tokens_in,
+    tokens_out, cost_usd). Does not write to disk or commit.
+    """
     current = _read_targets(project_root, step.target_files)
-    user_payload = {
+    user_payload: dict[str, Any] = {
         "step": {
             "title": step.title,
             "rationale": step.rationale,
@@ -57,11 +66,20 @@ def _execute_step(
         },
         "current_files": current,
     }
+    if failure_context:
+        user_payload["previous_failure"] = failure_context
+
+    user_messages: list[dict[str, Any]] = [
+        {"role": "user", "content": json.dumps(user_payload)},
+    ]
+    if rag is not None:
+        query = " ".join([step.title, step.rationale, *step.target_files])
+        ctx = rag.retrieve(query, token_budget=rag_token_budget)
+        if ctx.snippets:
+            user_messages.insert(0, {"role": "user", "content": ctx.to_prompt()})
+
     response = client.complete(
-        [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": json.dumps(user_payload)},
-        ],
+        [{"role": "system", "content": system_prompt}, *user_messages],
         json_mode=True,
     )
     data = _extract_json(response.text)
@@ -81,47 +99,66 @@ def make_node(
     repo: SessionRepo,
     project_root: Path,
     brain: Optional[BrainManager] = None,
+    rag: Optional[SubgraphRAG] = None,
+    rag_token_budget: int = 800,
 ):
+    """Single-step executor node.
+
+    Reads `state.current_step`, runs one LLM call, writes the proposed files,
+    and commits. Returns updated counters and the new commit sha. Approval
+    and verification happen in downstream nodes.
+    """
     executor_prompt = prompts.load("executor")
     brain_prompt = brain.cached_system_prompt() if brain and brain.exists() else ""
     system_prompt = "\n\n".join(p for p in (brain_prompt, executor_prompt) if p)
 
     def run(state: SessionState) -> dict:
-        diffs: list[str] = list(state.diffs)
-        tokens_in = state.tokens_in
-        tokens_out = state.tokens_out
-        cost = state.cost_usd
+        step = state.current()
+        if step is None:
+            return {}
+        if step.approved is False:
+            return {"current_step": state.current_step + 1}
 
-        for i, step in enumerate(state.plan, 1):
-            if step.approved is False:
-                continue
-            _console.print(f"[cyan]Executing step {i}/{len(state.plan)}: {step.title}[/cyan]")
-            files, ti, to, c = _execute_step(
-                step,
-                project_root=project_root,
-                client=client,
-                system_prompt=system_prompt,
-            )
-            tokens_in += ti
-            tokens_out += to
-            cost += c
+        idx = state.current_step
+        attempts = dict(state.step_attempts)
+        attempts[idx] = attempts.get(idx, 0) + 1
 
-            if not files:
-                _console.print("[yellow]  (no file changes)[/yellow]")
-                continue
+        _console.print(
+            f"[cyan]Executing step {idx + 1}/{len(state.plan)}: {step.title}[/cyan]"
+            + (f" [dim](retry {attempts[idx] - 1})[/dim]" if attempts[idx] > 1 else "")
+        )
 
+        files, ti, to, cost = execute_one_step(
+            step,
+            project_root=project_root,
+            client=client,
+            system_prompt=system_prompt,
+            rag=rag,
+            rag_token_budget=rag_token_budget,
+            failure_context=state.last_failure,
+        )
+
+        new_diffs = list(state.diffs)
+        sha = ""
+        if files:
             _write_files(project_root, files)
             sha = repo.commit_step(f"teak: {step.title}")
             if sha:
-                diffs.append(sha)
+                new_diffs.append(sha)
                 _console.print(f"[green]  committed {sha[:8]}[/green]")
+            else:
+                _console.print("[yellow]  (executor produced no changes)[/yellow]")
+        else:
+            _console.print("[yellow]  (executor returned no file changes)[/yellow]")
 
         return {
-            "diffs": diffs,
-            "current_step": len(state.plan),
-            "tokens_in": tokens_in,
-            "tokens_out": tokens_out,
-            "cost_usd": cost,
+            "diffs": new_diffs,
+            "tokens_in": state.tokens_in + ti,
+            "tokens_out": state.tokens_out + to,
+            "cost_usd": state.cost_usd + cost,
+            "step_attempts": attempts,
+            "last_failure": "",
+            "last_commit_sha": sha,
         }
 
     return run
