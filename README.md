@@ -1,5 +1,5 @@
 # Teak – Project Specification & Collaboration Guide
-**Version**: 2.0 (April 27, 2026)
+**Version**: 2.1 (April 30, 2026)
 **Purpose**: Single source of truth for all teammates (developers, designers, testers).
 
 ## 1. Project Vision
@@ -25,9 +25,9 @@ The name "Teak" comes from its strong, durable tree-like architecture (Tree-sitt
 | Token Efficiency | Good indexing | Subgraph RAG + prompt caching + hard budgets + live dashboard |
 | Collaboration Flow | Optional plans / chat-heavy | Enforced **Visible Plan → Approve → Incremental Execute** |
 | Session Continuity | Partial | Zero re-explaining tax across days and projects |
-| Form Factor | Full IDE fork or pure terminal | CLI-first — `pip install teak`, works alongside any editor |
+| Form Factor | Full IDE fork or pure terminal | CLI-first with optional split-pane desktop shell |
 
-## 3. Product Form Factor (MVP)
+## 3. Product Form Factor
 
 **CLI-first.** Install with `pip install teak` or `brew install teak`. No GUI required to get value.
 
@@ -44,7 +44,27 @@ The terminal UI uses `rich` for formatted output and `textual` for interactive a
 
 Works with **any** editor (VS Code, Neovim, Zed, etc.). Teak watches the project folder and applies changes via git branches and patches.
 
-**Phase 6 (future):** Optional Tauri desktop app once the CLI is stable and the team has validated the core loops.
+**Phase 6 desktop shell.** The optional Tauri app lives in `desktop/`. It keeps the CLI as the source of truth while giving Teak a native split-pane workflow:
+
+- Left pane: chat-style task composer.
+- Right pane: embedded terminal running in the selected project.
+- Draggable divider between panes.
+- Review mode sends `teak plan "<task>"` into the terminal.
+- Auto mode sends `teak plan "<task>" --auto`.
+
+Run locally:
+
+```bash
+cd desktop
+npm install
+npm run tauri
+```
+
+Tauri requires Rust/Cargo. On macOS with Homebrew:
+
+```bash
+brew install rust
+```
 
 ## 4. Core Pillars & Features (MVP)
 
@@ -97,6 +117,7 @@ Additional modes: quick inline chat, full agentic (no approval gates).
 | Layer | Technology | Notes |
 |---|---|---|
 | CLI + TUI | Python 3.12, `typer`, `rich`, `textual` | Self-contained, no separate server |
+| Desktop shell | Tauri 2, Vite, TypeScript, xterm, `portable-pty` | Optional split-pane GUI over the existing CLI |
 | Orchestration | LangGraph | State machine for agent loop |
 | LLM routing | LiteLLM | OpenAI, Anthropic, Grok, Ollama (local/offline) |
 | Prompt caching | Anthropic cache-control headers | Brain files cached per session |
@@ -166,7 +187,7 @@ LiteLLM + Ollama path is fully supported. `teak --model ollama/llama3` works wit
 | 3 | Visible Flow: LangGraph graph + Session Handoff | 1.5–2 weeks | Full Plan → Approve → Execute loop, handoff summary |
 | 4 | Token efficiency: prompt caching + hard budgets + model routing | 1 week | Measurable token reduction with benchmark |
 | 5 | Polish: Convention Violation Detection + Brain Templates + Ollama path | 1–2 weeks | Publishable CLI MVP |
-| 6 | (Future) Tauri desktop UI | TBD | Optional GUI once CLI is validated |
+| 6 | Tauri desktop UI | TBD | Validated split-pane shell: chat left, terminal right |
 
 **Total CLI MVP**: 6.5–9.5 weeks.
 
@@ -181,7 +202,7 @@ Publish a **token efficiency benchmark** at the end of Phase 4: measure tokens u
 
 ## 9. Non-Goals (MVP)
 
-- Desktop GUI (Phase 6, not MVP).
+- Full IDE replacement; the desktop shell remains a thin optional layer over the CLI.
 - Cloud hosting or team collaboration features.
 - Advanced multi-agent orchestration.
 - Support for every language at launch (Python, TS/JS, Rust, Go only).
@@ -189,11 +210,11 @@ Publish a **token efficiency benchmark** at the end of Phase 4: measure tokens u
 
 ## 10. Next Immediate Steps
 
-1. Create GitHub repo; this file becomes `README.md`.
-2. Set up Python project skeleton: `typer` CLI + `LangGraph` + `LiteLLM` + `GitPython` + `sqlite-vec`.
-3. Start **Phase 1**: `teak init` + Brain Bootstrapper + basic agent loop.
-4. Define the token benchmark methodology before Phase 4 begins.
+1. Keep the CLI workflow stable; it remains the authoritative execution path.
+2. Harden the Phase 6 desktop shell around the split-pane chat + terminal loop.
+3. Refactor approval/review gates into programmatic interrupts if the desktop UI should own approvals directly instead of delegating to the terminal.
+4. Package the Tauri app once the desktop workflow has been exercised across real projects.
 
 **Let's build the tool that finally makes AI collaboration feel natural — for every codebase you work on.**
 
-April 27, 2026
+April 30, 2026

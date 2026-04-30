@@ -1,0 +1,22 @@
+{
+  "name": "teak-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "tauri": "node scripts/check-tauri-prereqs.mjs && tauri dev",
+    "tauri:build": "node scripts/check-tauri-prereqs.mjs && tauri build"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.0.0",
+    "@xterm/xterm": "^5.5.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0",
+    "typescript": "^5.6.0",
+    "vite": "^8.0.10"
+  }
+}

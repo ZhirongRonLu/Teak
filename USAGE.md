@@ -1,6 +1,7 @@
-# Using Teak (Phase 5)
+# Using Teak (Phase 6)
 
-Phase 5 polishes the CLI MVP into something publishable:
+Teak is still CLI-first. Phase 5 polished the CLI MVP into something
+publishable:
 
 - **Convention Violation Detection** — after the planner emits a plan but
   before approval, Teak checks each step against `CONVENTIONS.md` /
@@ -34,6 +35,54 @@ Phase 4 still applies:
 
 Phases 0–3 still apply.
 
+## Desktop UI (Phase 6)
+
+The Phase 6 desktop shell lives in `desktop/`. It uses Tauri + Vite and keeps
+the CLI workflow intact:
+
+- Left pane: chat-style task composer.
+- Right pane: embedded project terminal.
+- The divider is draggable.
+- Review mode sends `teak plan "<task>"` into the terminal.
+- Auto mode sends `teak plan "<task>" --auto`.
+
+Prerequisites:
+
+- Node.js + npm.
+- Rust + Cargo, required by Tauri.
+- Teak available from this repo, from `.venv/bin/teak`, or from a global
+  install.
+
+On macOS with Homebrew, install the native toolchain with:
+
+```bash
+brew install rust
+```
+
+Run the desktop app:
+
+```bash
+cd desktop
+npm install
+npm run tauri
+```
+
+Build a production frontend bundle:
+
+```bash
+npm run build
+```
+
+Build a native app bundle:
+
+```bash
+npm run tauri:build
+```
+
+During development the bridge finds this repo, adds `src/` to `PYTHONPATH`,
+and prepends `.venv/bin` to `PATH` when present so the embedded terminal can
+run `teak` directly.
+
 ## Install
 
 Teak is a CLI; install it globally with [pipx](https://pipx.pypa.io) so it
@@ -60,7 +109,7 @@ teak --version
 Teak reads its API key from the environment via LiteLLM. For Anthropic:
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-api03-...
+export ANTHROPIC_API_KEY="<your-anthropic-key>"
 ```
 
 Verify the key + your model access before running Teak:
@@ -240,8 +289,8 @@ isn't always on PATH. Either open a new terminal after `pipx ensurepath`, or
 add `export PATH="$HOME/.local/bin:$PATH"` to your shell config.
 
 **`AuthenticationError: invalid x-api-key`** — the key isn't valid.
-- Anthropic keys look like `sk-ant-api03-<long-string>`. Anything else won't
-  work.
+- Make sure the value exported in `ANTHROPIC_API_KEY` is the current key from
+  your Anthropic console.
 - If you rotated a leaked key, the old key is permanently revoked — make sure
   you're exporting the *new* one (`echo $ANTHROPIC_API_KEY` to confirm).
 
@@ -257,6 +306,22 @@ when the venv was created from a conda-supplied Python; conda's `site.py`
 doesn't always process editable-install `.pth` files at startup. Use `pipx`
 instead of a manual venv, or recreate the venv with a non-conda Python (e.g.
 `pyenv` or python.org).
+
+**Desktop: `failed to run 'cargo metadata'`** — Rust/Cargo is missing or not
+on `PATH`. Install it, then open a new terminal:
+
+```bash
+brew install rust
+cargo --version
+```
+
+**Desktop: `Port 5173 is already in use`** — a previous Vite/Tauri dev server
+is still running. Stop that terminal session, or find and kill the listener:
+
+```bash
+lsof -nP -iTCP:5173 -sTCP:LISTEN
+kill <pid>
+```
 
 ## Updating Teak
 

@@ -11,6 +11,10 @@ __pycache__/
 .mypy_cache/
 build/
 dist/
+node_modules/
+desktop/node_modules/
+desktop/dist/
+desktop/src-tauri/target/
 
 # Secrets
 .env
