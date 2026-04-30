@@ -45,6 +45,8 @@ the CLI workflow intact:
 - The divider is draggable.
 - Review mode sends `teak plan "<task>"` into the terminal.
 - Auto mode sends `teak plan "<task>" --auto`.
+- Before sending a task, the desktop shell checks `git status --short` and
+  blocks with commit/stash guidance if the selected project is dirty.
 
 Prerequisites:
 
@@ -141,7 +143,9 @@ teak brain --edit          # open all four files in $EDITOR
 ```
 
 The brain lives at `.teak/brain/` (ARCHITECTURE.md, CONVENTIONS.md,
-DECISIONS.md, MEMORY.md). Commit it — it's part of the project.
+DECISIONS.md, MEMORY.md). Commit it — it's part of the project. `teak init`
+also writes `.teak/.gitignore` so `.teak/teak.db` and `.teak/.DS_Store` stay
+local while the brain files remain tracked.
 
 ### Coding loop
 
@@ -300,6 +304,36 @@ model. Run the curl test above against the model you actually want, or pass
 
 **`DirtyWorkingTree`** — Teak refuses to start with uncommitted changes
 (otherwise rollback semantics get confusing). Commit or stash first.
+
+- `.DS_Store` is not ignored by Git automatically. Add it to your global Git
+  ignore file or the project's `.gitignore`.
+- `?? .teak/` means Git sees untracked Teak project files. Commit
+  `.teak/.gitignore` and `.teak/brain/`; `.teak/teak.db` and
+  `.teak/.DS_Store` should remain ignored local runtime state.
+- `M .teak/teak.db` means the database is already tracked. `.gitignore` cannot
+  hide tracked files, so untrack the local runtime files once.
+
+```bash
+git add .teak/.gitignore .teak/brain
+git commit -m "Initialize Teak brain"
+```
+
+If `.teak/teak.db` or `.teak/.DS_Store` is already tracked:
+
+```bash
+printf "teak.db\n.DS_Store\n" > .teak/.gitignore
+git rm --cached --ignore-unmatch .teak/teak.db .teak/.DS_Store
+git add .teak/.gitignore
+git commit -m "Stop tracking Teak local state"
+```
+
+For macOS metadata, a global ignore avoids repeating the same rule in every
+repo:
+
+```bash
+printf ".DS_Store\n" >> ~/.gitignore_global
+git config --global core.excludesfile ~/.gitignore_global
+```
 
 **`ModuleNotFoundError: No module named 'teak'` in a venv** — known to happen
 when the venv was created from a conda-supplied Python; conda's `site.py`

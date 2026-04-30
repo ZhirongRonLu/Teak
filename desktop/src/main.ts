@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import "./styles.css";
@@ -21,6 +22,11 @@ interface ProjectSnapshot {
   brain_exists: boolean;
   brain_files: BrainFile[];
   status: string;
+}
+
+interface GitSnapshot {
+  clean: boolean;
+  output: string;
 }
 
 const app = document.querySelector<HTMLDivElement>("#app");
@@ -62,7 +68,7 @@ app.innerHTML = `
         ></textarea>
         <div class="composer-actions">
           <button id="statusButton" class="button" type="button">Status</button>
-          <button class="button primary" type="submit">Send</button>
+          <button id="sendButton" class="button primary" type="submit">Send</button>
         </div>
       </form>
     </section>
@@ -95,6 +101,7 @@ const terminalHost = byId<HTMLDivElement>("terminal");
 const loadProjectButton = byId<HTMLButtonElement>("loadProject");
 const restartTerminalButton = byId<HTMLButtonElement>("restartTerminal");
 const statusButton = byId<HTMLButtonElement>("statusButton");
+const sendButton = byId<HTMLButtonElement>("sendButton");
 const reviewModeButton = byId<HTMLButtonElement>("reviewMode");
 const autoModeButton = byId<HTMLButtonElement>("autoMode");
 const splitter = byId<HTMLDivElement>("splitter");
@@ -102,6 +109,7 @@ const splitter = byId<HTMLDivElement>("splitter");
 let projectPath = "";
 let mode: "review" | "auto" = "review";
 let terminalRunning = false;
+let taskSubmitting = false;
 let unlistenTerminal: UnlistenFn | undefined;
 
 const terminal = new Terminal({
@@ -135,7 +143,9 @@ const terminal = new Terminal({
     brightWhite: "#f6f8fa",
   },
 });
+const fitAddon = new FitAddon();
 
+terminal.loadAddon(fitAddon);
 terminal.open(terminalHost);
 terminal.onData((data) => {
   if (!terminalRunning) return;
@@ -151,9 +161,9 @@ async function boot(): Promise<void> {
   installResizeObserver();
 
   try {
-    unlistenTerminal = await listen<TerminalPayload>("terminal-output", (event) => {
-      terminal.write(event.payload.data);
-    });
+    unlistenTerminal = await listen<TerminalPayload>("terminal-output", (event) =>
+      writeTerminalOutput(event.payload.data)
+    );
   } catch {
     terminal.write("Native terminal bridge is available inside Tauri.\r\n");
   }
@@ -177,21 +187,7 @@ autoModeButton.addEventListener("click", () => setMode("auto"));
 
 chatForm.addEventListener("submit", (event) => {
   event.preventDefault();
-  const task = chatInput.value.trim();
-  if (!task) return;
-
-  appendChat("user", task);
-  chatInput.value = "";
-
-  const suffix = mode === "auto" ? " --auto" : "";
-  const command = `teak plan ${shellQuote(task)}${suffix}`;
-  appendChat(
-    "teak",
-    mode === "auto"
-      ? "Running the task in auto mode in the terminal."
-      : "Sent the task to the terminal. Use the terminal prompts for approve, edit, reject, and step review."
-  );
-  void sendTerminalCommand(command);
+  void submitTask();
 });
 
 window.addEventListener("beforeunload", () => {
@@ -226,7 +222,7 @@ async function loadProject(): Promise<void> {
 
 async function restartTerminal(): Promise<void> {
   if (!projectPath) return;
-  const size = terminalSize();
+  const size = fitTerminal();
   terminal.clear();
   terminalStatus.textContent = "Starting...";
   try {
@@ -235,7 +231,6 @@ async function restartTerminal(): Promise<void> {
       cols: size.cols,
       rows: size.rows,
     });
-    terminal.resize(size.cols, size.rows);
     terminalRunning = true;
     terminalStatus.textContent = shortPath(projectPath);
     terminal.focus();
@@ -257,10 +252,97 @@ async function sendTerminalCommand(command: string): Promise<void> {
   terminal.focus();
 }
 
+async function submitTask(): Promise<void> {
+  if (taskSubmitting) return;
+  const task = chatInput.value.trim();
+  if (!task) return;
+
+  taskSubmitting = true;
+  sendButton.disabled = true;
+  try {
+    appendChat("user", task);
+    chatInput.value = "";
+
+    if (!(await ensureCleanWorkingTree())) {
+      appendChat("teak", "Task not sent. Commit or stash the current changes, then send it again.");
+      return;
+    }
+
+    const suffix = mode === "auto" ? " --auto" : "";
+    const command = `teak plan ${shellQuote(task)}${suffix}`;
+    appendChat(
+      "teak",
+      mode === "auto"
+        ? "Running the task in auto mode in the terminal."
+        : "Sent the task to the terminal. Use the terminal prompts for approve, edit, reject, and step review."
+    );
+    await sendTerminalCommand(command);
+  } finally {
+    taskSubmitting = false;
+    sendButton.disabled = false;
+  }
+}
+
+async function ensureCleanWorkingTree(): Promise<boolean> {
+  if (!projectPath) {
+    appendChat("system", "Load a project before sending a task.");
+    return false;
+  }
+
+  try {
+    const git = await invoke<GitSnapshot>("git_status", { projectPath });
+    if (git.clean) {
+      return true;
+    }
+
+    appendChat(
+      "system",
+      [
+        "Teak cannot start a plan while the working tree has uncommitted changes.",
+        "",
+        git.output.trim(),
+        "",
+        ...dirtyTreeAdvice(git.output),
+      ].join("\n")
+    );
+    await sendTerminalCommand("git status --short");
+    return false;
+  } catch (error) {
+    appendChat(
+      "system",
+      `Could not check git status before running Teak: ${formatError(error)}`
+    );
+    return true;
+  }
+}
+
 function setMode(nextMode: "review" | "auto"): void {
   mode = nextMode;
   reviewModeButton.classList.toggle("active", mode === "review");
   autoModeButton.classList.toggle("active", mode === "auto");
+}
+
+function dirtyTreeAdvice(status: string): string[] {
+  const lines = status.split("\n");
+  const hasTrackedTeakRuntime = lines.some((line) =>
+    /^(?:[ MARCUD?!]{1,2})\s+\.teak\/(?:teak\.db|\.DS_Store)$/.test(line)
+  );
+
+  if (hasTrackedTeakRuntime) {
+    return [
+      "Teak runtime files are tracked in this repo. Untrack them once, then commit the cleanup:",
+      "  printf \"teak.db\\n.DS_Store\\n\" > .teak/.gitignore",
+      "  git rm --cached --ignore-unmatch .teak/teak.db .teak/.DS_Store",
+      "  git add .teak/.gitignore",
+      "  git commit -m \"Stop tracking Teak local state\"",
+    ];
+  }
+
+  return [
+    "Commit or stash these changes in the terminal, then send the task again:",
+    "  git add . && git commit -m \"checkpoint\"",
+    "  git stash push -u",
+  ];
 }
 
 function appendChat(role: ChatRole, text: string): void {
@@ -319,19 +401,36 @@ function installResizeObserver(): void {
 }
 
 function resizeTerminal(): void {
-  const size = terminalSize();
-  terminal.resize(size.cols, size.rows);
+  const size = fitTerminal();
   if (terminalRunning) {
     void invoke("terminal_resize", size).catch(() => undefined);
   }
 }
 
-function terminalSize(): { cols: number; rows: number } {
-  const rect = terminalHost.getBoundingClientRect();
+function fitTerminal(): { cols: number; rows: number } {
+  const wasAtBottom = terminalAtBottom();
+  fitAddon.fit();
+  if (wasAtBottom) {
+    terminal.scrollToBottom();
+  }
   return {
-    cols: Math.max(30, Math.floor(rect.width / 8.2)),
-    rows: Math.max(8, Math.floor(rect.height / 18)),
+    cols: Math.max(30, terminal.cols),
+    rows: Math.max(8, terminal.rows),
   };
+}
+
+function writeTerminalOutput(data: string): void {
+  const shouldStickToBottom = terminalAtBottom();
+  terminal.write(data, () => {
+    if (shouldStickToBottom) {
+      terminal.scrollToBottom();
+    }
+  });
+}
+
+function terminalAtBottom(): boolean {
+  const buffer = terminal.buffer.active;
+  return buffer.viewportY >= buffer.baseY - 1;
 }
 
 function shellQuote(value: string): string {

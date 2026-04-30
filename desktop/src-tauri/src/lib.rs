@@ -54,6 +54,12 @@ struct CommandOutput {
     stderr: String,
 }
 
+#[derive(Serialize)]
+struct GitSnapshot {
+    clean: bool,
+    output: String,
+}
+
 #[tauri::command]
 fn default_project_path() -> String {
     find_teak_source_root()
@@ -122,6 +128,31 @@ fn save_brain_file(project_path: String, name: String, content: String) -> Resul
 fn run_teak_status(project_path: String) -> Result<CommandOutput, String> {
     let project_root = normalize_project_path(&project_path)?;
     run_teak_capture(&project_root, &["status"])
+}
+
+#[tauri::command]
+fn git_status(project_path: String) -> Result<GitSnapshot, String> {
+    let project_root = normalize_project_path(&project_path)?;
+    let output = Command::new("git")
+        .args(["status", "--short"])
+        .current_dir(project_root)
+        .output()
+        .map_err(|e| format!("failed to run git status: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            "git status failed".to_string()
+        } else {
+            stderr
+        });
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    Ok(GitSnapshot {
+        clean: stdout.trim().is_empty(),
+        output: stdout,
+    })
 }
 
 #[tauri::command]
@@ -396,6 +427,7 @@ pub fn run() {
         .manage(TerminalState::default())
         .invoke_handler(tauri::generate_handler![
             default_project_path,
+            git_status,
             load_project,
             save_brain_file,
             run_teak_status,

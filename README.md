@@ -70,7 +70,9 @@ brew install rust
 
 ### Pillar 1 – Project Brain (kills the re-explaining tax)
 
-Git-tracked folder per project: `.teak/brain/`
+Git-tracked folder per project: `.teak/brain/`. `teak init` also writes
+`.teak/.gitignore` so the local runtime database is ignored while the brain
+files remain part of the project.
 
 Files (human-readable Markdown):
 - `ARCHITECTURE.md` — system design, major components, data flow
@@ -153,12 +155,13 @@ Router
 
 ```
 .teak/
+  .gitignore       # ignores local runtime state such as teak.db and .DS_Store
   brain/
     ARCHITECTURE.md
     CONVENTIONS.md
     DECISIONS.md
     MEMORY.md
-  teak.db          # SQLite: vectors, history, file hashes, session log
+  teak.db          # ignored SQLite: vectors, history, file hashes, session log
   templates/       # community brain templates
 ```
 
