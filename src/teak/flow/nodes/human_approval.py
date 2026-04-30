@@ -27,6 +27,15 @@ def _render_plan(plan: list[PlanStep]) -> None:
         _console.print(Panel(body, title=f"Step {i}/{len(plan)}", border_style="cyan"))
 
 
+def _render_violations(violations: list[str]) -> None:
+    if not violations:
+        return
+    body = "\n".join(f"• {v}" for v in violations)
+    _console.print(
+        Panel(body, title="convention check", border_style="red")
+    )
+
+
 def _plan_to_json(plan: list[PlanStep]) -> str:
     payload = {
         "steps": [
@@ -74,10 +83,24 @@ def make_node():
 
     def run(state: SessionState) -> dict:
         plan = list(state.plan)
+        if state.auto:
+            return {
+                "plan": [
+                    PlanStep(
+                        title=s.title,
+                        rationale=s.rationale,
+                        target_files=list(s.target_files),
+                        approved=True,
+                    )
+                    for s in plan
+                ],
+                "test_failures": [],
+            }
         while True:
             _render_plan(plan)
             if not plan:
                 return {"plan": []}
+            _render_violations(state.test_failures)
 
             choice = Prompt.ask(
                 r"[bold]Approve plan?[/bold] \[a]pprove / \[e]dit / \[r]eject",

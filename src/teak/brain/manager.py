@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Optional
 
 from teak import prompts
 from teak.config import TeakConfig, load_config
 from teak.llm.client import LLMClient
+from teak.llm.routing import TaskKind
 
 BRAIN_FILES: tuple[str, ...] = (
     "ARCHITECTURE.md",
@@ -85,12 +86,12 @@ class BrainManager:
             "current_brain": current,
             "diff_summary": diff_summary,
         }
-        response = client.complete(
-            [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": json.dumps(payload)},
-            ],
+        response = client.complete_cached(
+            cached_prefix=self.cached_system_prompt(),
+            instructions=system_prompt,
+            user_messages=[{"role": "user", "content": json.dumps(payload)}],
             json_mode=True,
+            kind=TaskKind.SUMMARIZE,
         )
         return parse_brain_update(response.text)
 
@@ -100,9 +101,36 @@ class BrainManager:
                 raise KeyError(f"unknown brain file: {name}")
             self.files[name].write(content)
 
-    def detect_violations(self, planned_changes: Iterable[str]) -> list[str]:
-        """Phase 5 — return a list of convention violations detected in `planned_changes`."""
-        raise NotImplementedError
+    def detect_violations(
+        self,
+        planned_changes: Iterable[str],
+        client: LLMClient,
+    ) -> list[ConventionViolation]:
+        """LLM-backed convention check.
+
+        Returns one entry per *flagged* step. An empty list means the plan is
+        compatible with the current CONVENTIONS.md / DECISIONS.md.
+        """
+        steps = [s for s in planned_changes if s.strip()]
+        if not steps or not self.exists():
+            return []
+
+        system_prompt = prompts.load("convention_check")
+        payload = {
+            "conventions": self.files["CONVENTIONS.md"].read(),
+            "decisions": self.files["DECISIONS.md"].read(),
+            "planned_steps": [
+                {"index": i, "description": text} for i, text in enumerate(steps)
+            ],
+        }
+        response = client.complete_cached(
+            cached_prefix=self.cached_system_prompt(),
+            instructions=system_prompt,
+            user_messages=[{"role": "user", "content": json.dumps(payload)}],
+            json_mode=True,
+            kind=TaskKind.SUMMARIZE,
+        )
+        return parse_violations(response.text)
 
     def summary_lines(self) -> list[str]:
         """Short human-readable status line per brain file (for `teak brain`)."""
@@ -116,6 +144,45 @@ class BrainManager:
             head = text.splitlines()[0] if text else "(empty)"
             out.append(f"{name}: {len(text)} chars — {head[:80]}")
         return out
+
+
+@dataclass
+class ConventionViolation:
+    step_index: int
+    rule: str  # the convention/decision the step appears to break
+    detail: str  # one-sentence explanation
+
+
+def parse_violations(text: str) -> list[ConventionViolation]:
+    text = text.strip()
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        start, end = text.find("{"), text.rfind("}")
+        if start < 0 or end <= start:
+            raise ValueError("convention check response was not valid JSON")
+        data = json.loads(text[start : end + 1])
+
+    if not isinstance(data, dict):
+        raise ValueError("convention check response is not a JSON object")
+    raw = data.get("violations", [])
+    if not isinstance(raw, list):
+        raise ValueError("'violations' must be a list")
+
+    out: list[ConventionViolation] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            raise ValueError("each violation must be an object")
+        try:
+            idx = int(entry.get("step_index", -1))
+        except (TypeError, ValueError):
+            idx = -1
+        rule = str(entry.get("rule", "")).strip()
+        detail = str(entry.get("detail", "")).strip()
+        if not rule and not detail:
+            continue
+        out.append(ConventionViolation(step_index=idx, rule=rule, detail=detail))
+    return out
 
 
 def parse_brain_update(text: str) -> dict[str, str]:

@@ -1,5 +1,6 @@
 from teak.flow.nodes import (
     brain_updater,
+    convention_check,
     executor,
     handoff,
     human_approval,
@@ -12,6 +13,7 @@ from teak.flow.nodes import (
 __all__ = [
     "router",
     "planner",
+    "convention_check",
     "human_approval",
     "executor",
     "step_review",

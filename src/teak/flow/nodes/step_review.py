@@ -39,6 +39,9 @@ def make_node(repo: SessionRepo):
             # Executor didn't commit this step — nothing to review.
             return {"current_step": state.current_step + 1, "last_commit_sha": ""}
 
+        if state.auto:
+            return {"last_commit_sha": sha}
+
         _show_last_commit_diff(repo, sha)
         choice = Prompt.ask(
             r"[bold]Accept this change?[/bold] \[a]ccept / \[r]eject",

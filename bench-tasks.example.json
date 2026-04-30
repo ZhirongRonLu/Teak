@@ -1,0 +1,22 @@
+{
+  "tasks": [
+    {
+      "name": "add health endpoint",
+      "project_path": "/absolute/path/to/some-fastapi-project",
+      "task": "add a /health endpoint that returns {\"ok\": true}",
+      "base_ref": "main"
+    },
+    {
+      "name": "rename function",
+      "project_path": "/absolute/path/to/some-python-project",
+      "task": "rename function `compute()` in src/core.py to `evaluate()` and update all callers",
+      "base_ref": "main"
+    },
+    {
+      "name": "add docstring",
+      "project_path": "/absolute/path/to/some-rust-project",
+      "task": "add a module-level docstring to src/lib.rs explaining the public API",
+      "base_ref": "main"
+    }
+  ]
+}

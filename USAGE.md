@@ -1,14 +1,38 @@
-# Using Teak (Phase 3)
+# Using Teak (Phase 5)
 
-Phase 3 lights up the **full visible flow**: per-step accept/reject with
-`git reset HEAD~1` on rejection, an opt-in verifier loop that reruns the
-executor on test failure, and a **Session Handoff** that persists a
-one-paragraph summary into `.teak/teak.db` and auto-prepends it to the
-planner of the next session — zero re-explaining tax across days.
+Phase 5 polishes the CLI MVP into something publishable:
 
-Phases 0–2 still apply: Phase 0 plan/approve/execute, Phase 1 Project Brain,
-Phase 2 Tree-sitter + sqlite-vec subgraph RAG. Prompt caching and hard token
-budgets land in Phase 4.
+- **Convention Violation Detection** — after the planner emits a plan but
+  before approval, Teak checks each step against `CONVENTIONS.md` /
+  `DECISIONS.md` and flags conflicts in red. The check is a prompt-cached
+  LLM call routed to the cheap planner model.
+- **Brain Templates** — the four built-ins (`python-cli`, `django-rest`,
+  `next-monorepo`, `go-microservice`) plus filesystem loading from
+  `~/.teak/templates/`. Drop a directory there with the four MD files (and
+  optionally a `template.json` for `name`/`description`) and it appears in
+  `teak init --list-templates`. User templates shadow built-ins of the same
+  name.
+- **Ollama / air-gapped path** — set `OLLAMA_HOST=http://localhost:11434`
+  and `teak --model ollama/llama3` works end-to-end with no cloud
+  dependency. Embeddings auto-route to `ollama/nomic-embed-text`. Override
+  with `TEAK_EMBEDDING_MODEL=<id>` and (optionally) `TEAK_EMBEDDING_DIM`.
+
+Phase 4 still applies:
+
+- **Anthropic prompt caching** on the Project Brain prefix — full price the
+  first call, ~10% input price for the next ~5 minutes. Brain content is
+  shipped exactly once per cache window even though every node sees it.
+- **Hard token budget** with pre-flight estimation (`litellm.token_counter`
+  + `litellm.cost_per_token`) and an auto-downshift to the planner model at
+  95% spend. 80%-spend warning fires once per session.
+- **Model routing** by task kind: planner / handoff / brain updates use
+  `--planner-model` (cheap), the executor uses `--model` (heavy). Override
+  per-call still works.
+- **Live dashboard** in `teak status`: total tokens/cost, cache hit ratio,
+  last session pointer.
+- **Benchmark harness** (`teak bench`) for the launch number.
+
+Phases 0–3 still apply.
 
 ## Install
 
@@ -108,16 +132,17 @@ git merge <session-branch>     # or cherry-pick the commits you want
 Reject a session entirely by deleting the branch — your working branch is
 untouched because every change lives only on the session branch.
 
-## CLI reference (Phase 3)
+## CLI reference (Phase 5)
 
 | Command | Status |
 |---|---|
 | `teak init [path]` | Working — survey + LLM draft, or `--template <name>` |
-| `teak init --list-templates` | Working — show built-in starters |
+| `teak init --list-templates` | Working — built-ins + `~/.teak/templates/*` |
 | `teak brain [--edit]` | Working — render or edit brain files |
 | `teak index [--force]` | Working — build/refresh the context index |
-| `teak status` | Working — brain + index health |
+| `teak status` | Working — brain + index + token dashboard |
 | `teak session` | Working — show last handoff |
+| `teak bench tasks.json` | Working — token-efficiency benchmark harness |
 | `teak plan "<task>" […]` | Working — full visible flow (per-step + verify + handoff) |
 | `teak --version` | Working |
 | `teak chat` | Stub (future — QuickMode) |
@@ -136,14 +161,42 @@ teak status           # files / symbols / call edges / imports counts
 
 ### Embedder selection
 
-| Env var present | Embedder used |
+| Setting | Embedder used |
 |---|---|
+| `TEAK_EMBEDDING_MODEL=<id>` | LiteLLM with that exact model id (with optional `TEAK_EMBEDDING_DIM`) |
+| `OLLAMA_HOST` set, no overrides | `ollama/nomic-embed-text` (768-dim) |
 | `OPENAI_API_KEY` | `text-embedding-3-small` (1536-dim) |
-| `VOYAGE_API_KEY` | `voyage-3` (1024-dim) |
-| _neither_ | local hash embedder (256-dim, no network, low quality) |
+| `VOYAGE_API_KEY` | `voyage/voyage-3` (1024-dim) |
+| _none of the above_ | local hash embedder (256-dim, no network, low quality) |
 
 Switching embedders changes the vector dimension; the index drops the vec
 table and rebuilds it on the next `teak index` run.
+
+### Air-gapped / offline workflow
+
+```bash
+ollama pull llama3
+ollama pull nomic-embed-text
+export OLLAMA_HOST=http://localhost:11434
+
+cd <project>
+teak init --template python-cli                            # zero LLM calls
+teak index                                                  # uses ollama embeddings
+teak plan "fix flaky test in tests/test_login.py" \
+   --model ollama/llama3 --planner-model ollama/llama3
+```
+
+No API keys are read; no traffic leaves the machine. Cache stats stay zero
+because Ollama doesn't implement Anthropic-style prompt caching, but the
+brain prefix is still authoritative for every node.
+
+### Custom brain templates
+
+Drop a directory under `~/.teak/templates/<name>/` with the four
+`ARCHITECTURE.md` / `CONVENTIONS.md` / `DECISIONS.md` / `MEMORY.md` files
+plus an optional `template.json` (`{"name": "...", "description": "..."}`).
+Use it with `teak init --template <name>`. A user template with the same
+name as a built-in shadows the built-in.
 
 Flags on `teak plan`:
 - `--model anthropic/<id>` — override the default model.
@@ -158,6 +211,27 @@ Flags on `teak plan`:
   `package.json` / `Cargo.toml` / `go.mod`. Equivalent to passing the
   detected command via `--verify`.
 - `--max-retries N` — verifier retries per step before prompting (default 2).
+- `--planner-model anthropic/<id>` — cheap model for planning, summarization
+  and brain updates. Defaults to `config.planner_model` (haiku).
+- `--auto` — auto-approve plan + every step. Used by `teak bench`; not
+  intended for routine human-driven sessions.
+
+### Benchmark
+
+```bash
+teak bench bench-tasks.example.json --modes teak,naive --output results.csv
+```
+
+The harness:
+- Resets each project's working tree to `base_ref` between modes.
+- Runs `teak` mode in `--auto` (no human prompts) and records tokens / cost
+  / cache hit stats from the session.
+- Runs `naive` mode by concatenating every supported source file (up to
+  ~200 KB) into a single LLM call and recording its tokens / cost.
+- Emits CSV with one row per (task, mode).
+
+Sample task file: `bench-tasks.example.json`. Replace `project_path` with
+absolute paths to clean git checkouts before running.
 
 ## Troubleshooting
 

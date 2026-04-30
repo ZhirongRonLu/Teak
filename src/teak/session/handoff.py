@@ -11,6 +11,7 @@ from teak.config import TeakConfig
 from teak.context.storage import VectorStore
 from teak.flow.state import SessionState
 from teak.llm.client import LLMClient
+from teak.llm.routing import TaskKind
 
 
 @dataclass
@@ -22,6 +23,11 @@ class Handoff:
     summary: str
     pending: list[str] = field(default_factory=list)
     decisions: list[str] = field(default_factory=list)
+    tokens_in: int = 0
+    tokens_out: int = 0
+    cost_usd: float = 0.0
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
 
     def to_prompt(self) -> str:
         parts = [f"## Previous session ({self.created_at}, branch {self.branch})", self.summary]
@@ -69,10 +75,7 @@ def generate_handoff(
 ) -> Handoff:
     """Build the handoff summary from session diffs + decisions."""
     system_prompt = prompts.load("handoff")
-    sections: list[str] = []
-    if brain and brain.exists():
-        sections.append(brain.cached_system_prompt())
-    sections.append(system_prompt)
+    cached_prefix = brain.cached_system_prompt() if brain and brain.exists() else ""
 
     payload = {
         "task": state.task,
@@ -84,14 +87,19 @@ def generate_handoff(
         "cost_usd": state.cost_usd,
         "last_failure": state.last_failure,
     }
-    response = client.complete(
-        [
-            {"role": "system", "content": "\n\n".join(sections)},
-            {"role": "user", "content": json.dumps(payload)},
-        ],
+    response = client.complete_cached(
+        cached_prefix=cached_prefix,
+        instructions=system_prompt,
+        user_messages=[{"role": "user", "content": json.dumps(payload)}],
         json_mode=True,
+        kind=TaskKind.SUMMARIZE,
     )
     handoff = parse_handoff_payload(response.text, branch=state.branch)
+    handoff.tokens_in = state.tokens_in
+    handoff.tokens_out = state.tokens_out
+    handoff.cost_usd = state.cost_usd
+    handoff.cache_read_tokens = state.cache_read_tokens
+    handoff.cache_creation_tokens = state.cache_creation_tokens
     persist_handoff(handoff, config, state)
     return handoff
 
@@ -118,6 +126,60 @@ def persist_handoff(handoff: Handoff, config: TeakConfig, state: SessionState) -
         )
 
 
+def load_all_handoffs(config: TeakConfig) -> list[Handoff]:
+    """All handoffs in chronological order (oldest first)."""
+    if not config.db_path.exists():
+        return []
+    store = VectorStore(config.db_path)
+    handoffs: list[Handoff] = []
+    with store.connect() as conn:
+        rows = conn.execute(
+            "SELECT handoff FROM sessions WHERE handoff IS NOT NULL ORDER BY id ASC"
+        ).fetchall()
+    for row in rows:
+        if not row[0]:
+            continue
+        try:
+            data = json.loads(row[0])
+        except (json.JSONDecodeError, TypeError):
+            continue
+        handoffs.append(
+            Handoff(
+                created_at=data.get("created_at", ""),
+                branch=data.get("branch", ""),
+                summary=data.get("summary", ""),
+                pending=list(data.get("pending", [])),
+                decisions=list(data.get("decisions", [])),
+                tokens_in=int(data.get("tokens_in", 0) or 0),
+                tokens_out=int(data.get("tokens_out", 0) or 0),
+                cost_usd=float(data.get("cost_usd", 0.0) or 0.0),
+                cache_read_tokens=int(data.get("cache_read_tokens", 0) or 0),
+                cache_creation_tokens=int(data.get("cache_creation_tokens", 0) or 0),
+            )
+        )
+    return handoffs
+
+
+def aggregate_usage(handoffs: list[Handoff]) -> dict[str, float]:
+    """Sum tokens / cost / cache stats across a list of handoffs."""
+    total_in = sum(h.tokens_in for h in handoffs)
+    total_out = sum(h.tokens_out for h in handoffs)
+    cache_read = sum(h.cache_read_tokens for h in handoffs)
+    cache_creation = sum(h.cache_creation_tokens for h in handoffs)
+    cost = sum(h.cost_usd for h in handoffs)
+    cache_billable = total_in  # input side
+    hit_ratio = (cache_read / cache_billable) if cache_billable else 0.0
+    return {
+        "sessions": len(handoffs),
+        "tokens_in": total_in,
+        "tokens_out": total_out,
+        "cost_usd": cost,
+        "cache_read_tokens": cache_read,
+        "cache_creation_tokens": cache_creation,
+        "cache_hit_ratio": hit_ratio,
+    }
+
+
 def load_last_handoff(config: TeakConfig) -> Optional[Handoff]:
     """Return the most recent handoff for this project, or None on first run."""
     if not config.db_path.exists():
@@ -140,6 +202,11 @@ def load_last_handoff(config: TeakConfig) -> Optional[Handoff]:
         summary=data.get("summary", ""),
         pending=list(data.get("pending", [])),
         decisions=list(data.get("decisions", [])),
+        tokens_in=int(data.get("tokens_in", 0) or 0),
+        tokens_out=int(data.get("tokens_out", 0) or 0),
+        cost_usd=float(data.get("cost_usd", 0.0) or 0.0),
+        cache_read_tokens=int(data.get("cache_read_tokens", 0) or 0),
+        cache_creation_tokens=int(data.get("cache_creation_tokens", 0) or 0),
     )
 
 

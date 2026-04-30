@@ -11,6 +11,7 @@ from teak.brain.manager import BrainManager
 from teak.context.rag import SubgraphRAG
 from teak.flow.state import PlanStep, SessionState
 from teak.llm.client import LLMClient
+from teak.llm.routing import TaskKind
 from teak.vcs.repo import SessionRepo
 
 _console = Console()
@@ -47,7 +48,8 @@ def execute_one_step(
     *,
     project_root: Path,
     client: LLMClient,
-    system_prompt: str,
+    cached_prefix: str,
+    instructions: str,
     rag: Optional[SubgraphRAG] = None,
     rag_token_budget: int = 800,
     failure_context: str = "",
@@ -78,9 +80,12 @@ def execute_one_step(
         if ctx.snippets:
             user_messages.insert(0, {"role": "user", "content": ctx.to_prompt()})
 
-    response = client.complete(
-        [{"role": "system", "content": system_prompt}, *user_messages],
+    response = client.complete_cached(
+        cached_prefix=cached_prefix,
+        instructions=instructions,
+        user_messages=user_messages,
         json_mode=True,
+        kind=TaskKind.GENERATE_CODE,
     )
     data = _extract_json(response.text)
     files = data.get("files") or {}
@@ -110,7 +115,6 @@ def make_node(
     """
     executor_prompt = prompts.load("executor")
     brain_prompt = brain.cached_system_prompt() if brain and brain.exists() else ""
-    system_prompt = "\n\n".join(p for p in (brain_prompt, executor_prompt) if p)
 
     def run(state: SessionState) -> dict:
         step = state.current()
@@ -132,7 +136,8 @@ def make_node(
             step,
             project_root=project_root,
             client=client,
-            system_prompt=system_prompt,
+            cached_prefix=brain_prompt,
+            instructions=executor_prompt,
             rag=rag,
             rag_token_budget=rag_token_budget,
             failure_context=state.last_failure,

@@ -56,6 +56,9 @@ def make_node(client: LLMClient, brain: BrainManager, repo: SessionRepo):
             old = current.get(name, "")
             if old == new_content:
                 continue
+            if state.auto:
+                approved[name] = new_content
+                continue
             _render_diff(name, old, new_content)
             choice = Prompt.ask(
                 f"Apply update to [bold]{name}[/bold]?",

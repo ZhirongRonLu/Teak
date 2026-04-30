@@ -8,6 +8,7 @@ from teak.brain.manager import BrainManager
 from teak.context.rag import SubgraphRAG
 from teak.flow.state import PlanStep, SessionState
 from teak.llm.client import LLMClient
+from teak.llm.routing import TaskKind
 
 
 def parse_plan(text: str) -> tuple[list[PlanStep], str]:
@@ -54,7 +55,6 @@ def make_node(
     brain_prompt = brain.cached_system_prompt() if brain and brain.exists() else ""
 
     def run(state: SessionState) -> dict:
-        system_parts = [p for p in (brain_prompt, planner_prompt) if p]
         user_parts: list[str] = []
         if state.previous_handoff:
             user_parts.append(state.previous_handoff)
@@ -63,11 +63,13 @@ def make_node(
             ctx = rag.retrieve(state.task, token_budget=rag_token_budget)
             if ctx.snippets:
                 user_parts.append(ctx.to_prompt())
-        messages = [
-            {"role": "system", "content": "\n\n".join(system_parts)},
-            {"role": "user", "content": "\n\n".join(user_parts)},
-        ]
-        response = client.complete(messages, json_mode=True)
+        response = client.complete_cached(
+            cached_prefix=brain_prompt,
+            instructions=planner_prompt,
+            user_messages=[{"role": "user", "content": "\n\n".join(user_parts)}],
+            json_mode=True,
+            kind=TaskKind.PLAN,
+        )
         steps, _notes = parse_plan(response.text)
         return {
             "plan": steps,

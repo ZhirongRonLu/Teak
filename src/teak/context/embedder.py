@@ -88,13 +88,45 @@ class LiteLLMEmbedder:
 
 
 def choose_embedder() -> Embedder:
-    """Pick an embedder based on available API keys.
+    """Pick an embedder based on available providers.
 
-    OpenAI key → text-embedding-3-small. Voyage key → voyage-3.
-    Otherwise fall back to HashEmbedder so retrieval still functions offline.
+    Priority:
+      1. `TEAK_EMBEDDING_MODEL` (explicit override; e.g. "ollama/nomic-embed-text").
+      2. Ollama (when `OLLAMA_HOST` is set OR a local daemon answers).
+      3. OpenAI (`OPENAI_API_KEY`) → text-embedding-3-small.
+      4. Voyage (`VOYAGE_API_KEY`) → voyage-3.
+      5. HashEmbedder fallback so retrieval functions offline with no setup.
     """
+    explicit = os.environ.get("TEAK_EMBEDDING_MODEL")
+    if explicit:
+        dim = int(os.environ.get("TEAK_EMBEDDING_DIM", "0")) or _guess_dim(explicit)
+        return LiteLLMEmbedder(model=explicit, dim=dim, name=explicit)
+
+    if os.environ.get("OLLAMA_HOST") or os.environ.get("TEAK_PREFER_OLLAMA"):
+        return LiteLLMEmbedder(
+            model="ollama/nomic-embed-text",
+            dim=768,
+            name="ollama/nomic-embed-text",
+        )
+
     if os.environ.get("OPENAI_API_KEY"):
         return LiteLLMEmbedder(model="text-embedding-3-small", dim=1536)
     if os.environ.get("VOYAGE_API_KEY"):
         return LiteLLMEmbedder(model="voyage/voyage-3", dim=1024)
     return HashEmbedder()
+
+
+def _guess_dim(model: str) -> int:
+    """Reasonable default dim for common embedding models."""
+    table = {
+        "text-embedding-3-small": 1536,
+        "text-embedding-3-large": 3072,
+        "voyage-3": 1024,
+        "nomic-embed-text": 768,
+        "mxbai-embed-large": 1024,
+        "bge-m3": 1024,
+    }
+    for key, dim in table.items():
+        if key in model:
+            return dim
+    return 1536  # safe default; sqlite-vec table will recreate if mismatched

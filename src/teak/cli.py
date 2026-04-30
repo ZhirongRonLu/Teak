@@ -19,7 +19,7 @@ from teak.context.embedder import choose_embedder
 from teak.context.indexer import Indexer
 from teak.context.storage import VectorStore
 from teak.flow.graph import run_session
-from teak.session.handoff import load_last_handoff
+from teak.session.handoff import aggregate_usage, load_all_handoffs, load_last_handoff
 from teak.vcs.repo import DirtyWorkingTree
 
 app = typer.Typer(
@@ -116,7 +116,12 @@ def chat(
 def plan(
     task: str = typer.Argument(..., help="What you want Teak to do."),
     budget: Optional[float] = typer.Option(None, help="Per-session token budget in USD."),
-    model: Optional[str] = typer.Option(None, help="Override LLM model id."),
+    model: Optional[str] = typer.Option(None, help="Override LLM model id (heavy/code-gen)."),
+    planner_model: Optional[str] = typer.Option(
+        None,
+        "--planner-model",
+        help="Cheap model used for planning, summarization, and brain updates.",
+    ),
     no_context: bool = typer.Option(
         False,
         "--no-context",
@@ -134,6 +139,11 @@ def plan(
     ),
     max_retries: int = typer.Option(
         2, "--max-retries", help="Verifier retries per step before prompting."
+    ),
+    auto: bool = typer.Option(
+        False,
+        "--auto",
+        help="Auto-approve plan and every step (used by `teak bench`).",
     ),
 ) -> None:
     """Generate, approve, and execute a plan for `task`."""
@@ -154,9 +164,11 @@ def plan(
             task=task,
             budget_usd=budget,
             model=model,
+            planner_model=planner_model,
             use_context=not no_context,
             verifier_command=verifier_command,
             max_step_retries=max_retries,
+            auto=auto,
         )
     except DirtyWorkingTree as e:
         console.print(f"[red]{e}[/red]")
@@ -198,6 +210,49 @@ def brain(
     for name in BRAIN_FILES:
         body = manager.files[name].read().strip() or "_(empty)_"
         console.print(Panel(Markdown(body), title=name, border_style="cyan"))
+
+
+@app.command()
+def bench(
+    tasks_file: Path = typer.Argument(..., help="JSON file with tasks to benchmark."),
+    output: Path = typer.Option(
+        Path("bench-results.csv"), "--output", "-o", help="CSV output path."
+    ),
+    modes: str = typer.Option(
+        "teak", "--modes", help="Comma-separated modes to run: teak,naive."
+    ),
+    model: Optional[str] = typer.Option(
+        None,
+        "--model",
+        help="Model id used for both Teak runs and the naive baseline.",
+    ),
+) -> None:
+    """Token-efficiency benchmark across a list of tasks (Phase 4)."""
+    from teak.bench import load_tasks, run_benchmark, summarize, write_csv
+
+    if not tasks_file.is_file():
+        console.print(f"[red]tasks file not found: {tasks_file}[/red]")
+        raise typer.Exit(code=1)
+
+    config = load_config()
+    chosen_model = model or config.default_model
+    mode_list = [m.strip() for m in modes.split(",") if m.strip()]
+    tasks = load_tasks(tasks_file)
+    console.print(
+        f"Running {len(tasks)} task(s) × {mode_list} on [bold]{chosen_model}[/bold]…"
+    )
+
+    results = run_benchmark(tasks, modes=mode_list, model=chosen_model)
+    if results:
+        write_csv(results, output)
+        console.print(f"[green]wrote {len(results)} rows to {output}[/green]")
+    summary = summarize(results)
+    for mode, agg in summary.items():
+        console.print(
+            f"  [bold]{mode}[/bold]: "
+            f"{int(agg['tokens_in']):,} in / {int(agg['tokens_out']):,} out, "
+            f"${agg['cost_usd']:.4f}"
+        )
 
 
 @app.command()
@@ -286,6 +341,27 @@ def status() -> None:
     else:
         console.print(
             "[bold]Index:[/bold] [yellow]empty[/yellow] — run [dim]teak index[/dim]"
+        )
+
+    handoffs = load_all_handoffs(config)
+    if handoffs:
+        agg = aggregate_usage(handoffs)
+        console.print(
+            f"[bold]Sessions:[/bold] {agg['sessions']} "
+            f"({agg['tokens_in']:,} in / {agg['tokens_out']:,} out, "
+            f"${agg['cost_usd']:.4f})"
+        )
+        if agg["cache_read_tokens"] or agg["cache_creation_tokens"]:
+            console.print(
+                f"  cache: {agg['cache_read_tokens']:,} read / "
+                f"{agg['cache_creation_tokens']:,} written  "
+                f"(hit ratio {agg['cache_hit_ratio']:.0%})"
+            )
+        last = handoffs[-1]
+        console.print(f"  last: [dim]{last.created_at}[/dim] {last.branch}")
+    else:
+        console.print(
+            "[bold]Sessions:[/bold] [yellow]none yet[/yellow] — run [dim]teak plan[/dim]"
         )
 
 

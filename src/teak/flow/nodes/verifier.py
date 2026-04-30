@@ -81,13 +81,16 @@ def make_node(repo: SessionRepo, project_root: Path):
                 "last_commit_sha": "",
             }
 
-        choice = Prompt.ask(
-            r"[bold]Retries exhausted.[/bold] \[k]eep failing change / "
-            r"\[r]evert and skip / \[a]bort session",
-            choices=["k", "r", "a"],
-            default="r",
-            show_choices=False,
-        )
+        if state.auto:
+            choice = "r"  # auto-mode: revert and skip exhausted step
+        else:
+            choice = Prompt.ask(
+                r"[bold]Retries exhausted.[/bold] \[k]eep failing change / "
+                r"\[r]evert and skip / \[a]bort session",
+                choices=["k", "r", "a"],
+                default="r",
+                show_choices=False,
+            )
         if choice == "k":
             return {
                 "current_step": state.current_step + 1,

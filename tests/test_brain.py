@@ -20,17 +20,36 @@ class _StubClient:
         self.text = text
         self.calls: list[list[dict]] = []
 
-    def complete(self, messages, *, model=None, json_mode=False, cache_prefix=False):
+    def complete(self, messages, *, model=None, json_mode=False, kind=None):
         self.calls.append(messages)
+        return _StubResp(self.text)
 
-        class _Resp:
-            text = self.text
-            tokens_in = 1
-            tokens_out = 1
-            cost_usd = 0.0
-            cache_hit_tokens = 0
+    def complete_cached(
+        self,
+        *,
+        cached_prefix,
+        instructions,
+        user_messages,
+        json_mode=False,
+        kind=None,
+        model=None,
+    ):
+        # Reconstruct an equivalent flat message list for assertion convenience.
+        system = "\n\n".join(p for p in (cached_prefix, instructions) if p)
+        flat = [{"role": "system", "content": system}] + list(user_messages)
+        self.calls.append(flat)
+        return _StubResp(self.text)
 
-        return _Resp()
+
+class _StubResp:
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.tokens_in = 1
+        self.tokens_out = 1
+        self.cost_usd = 0.0
+        self.cache_read_tokens = 0
+        self.cache_creation_tokens = 0
+        self.model = "stub"
 
 
 def _make_project(tmp_path: Path) -> Path:

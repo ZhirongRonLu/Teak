@@ -36,6 +36,8 @@ class SessionState:
     tokens_in: int = 0
     tokens_out: int = 0
     cost_usd: float = 0.0
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
     budget_usd: Optional[float] = None
     handoff_summary: str = ""
     previous_handoff: str = ""
@@ -46,6 +48,7 @@ class SessionState:
     last_commit_sha: str = ""
     verifier_command: Optional[str] = None
     max_step_retries: int = 2
+    auto: bool = False  # auto-approve plan + every step (used by `teak bench`)
 
     @property
     def over_budget(self) -> bool:

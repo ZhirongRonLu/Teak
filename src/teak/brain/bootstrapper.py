@@ -10,6 +10,7 @@ from teak.brain.manager import BRAIN_FILES, BrainManager
 from teak.brain.templates import load_template
 from teak.config import TeakConfig
 from teak.llm.client import LLMClient
+from teak.llm.routing import TaskKind
 
 
 _SKIP_DIR_NAMES: frozenset[str] = frozenset(
@@ -188,6 +189,7 @@ def _draft_with_llm(survey: CodebaseSurvey, client: LLMClient) -> dict[str, str]
             {"role": "user", "content": user_payload},
         ],
         json_mode=True,
+        kind=TaskKind.PLAN,
     )
     return _parse_brain_payload(response.text)
 

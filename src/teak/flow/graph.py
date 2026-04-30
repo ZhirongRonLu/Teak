@@ -12,6 +12,7 @@ from teak.context.indexer import Indexer
 from teak.context.rag import SubgraphRAG
 from teak.context.storage import VectorStore
 from teak.flow.nodes import brain_updater as brain_updater_node
+from teak.flow.nodes import convention_check as convention_check_node
 from teak.flow.nodes import executor as executor_node
 from teak.flow.nodes import handoff as handoff_node
 from teak.flow.nodes import human_approval as approval_node
@@ -79,6 +80,10 @@ def build_graph(
     builder = StateGraph(SessionState)
 
     builder.add_node("planner", planner_node.make_node(client, brain=brain, rag=rag))
+    if brain is not None:
+        builder.add_node(
+            "convention_check", convention_check_node.make_node(client, brain)
+        )
     builder.add_node("plan_approval", approval_node.make_node())
     builder.add_node(
         "step_runner",
@@ -98,7 +103,11 @@ def build_graph(
     )
 
     builder.add_edge(START, "planner")
-    builder.add_edge("planner", "plan_approval")
+    if brain is not None:
+        builder.add_edge("planner", "convention_check")
+        builder.add_edge("convention_check", "plan_approval")
+    else:
+        builder.add_edge("planner", "plan_approval")
     builder.add_conditional_edges(
         "plan_approval",
         _route_after_plan_approval,
@@ -162,15 +171,21 @@ def run_session(
     task: Optional[str] = None,
     budget_usd: Optional[float] = None,
     model: Optional[str] = None,
+    planner_model: Optional[str] = None,
     use_context: bool = True,
     verifier_command: Optional[str] = None,
     max_step_retries: int = 2,
+    auto: bool = False,
 ) -> SessionState:
     if not task:
         raise ValueError("Phase 0 requires a task; QuickMode lands in a later phase")
 
     tracker = BudgetTracker(budget_usd=budget_usd) if budget_usd is not None else None
-    client = LLMClient(default_model=model or config.default_model, tracker=tracker)
+    client = LLMClient(
+        default_model=model or config.default_model,
+        planner_model=planner_model or config.planner_model,
+        tracker=tracker,
+    )
     repo = SessionRepo(project_root=config.project_root)
     brain = BrainManager(config)
     rag = _make_rag(config) if use_context else None
@@ -190,11 +205,20 @@ def run_session(
         verifier_command=verifier_command,
         max_step_retries=max_step_retries,
         previous_handoff=previous.to_prompt() if previous else "",
+        auto=auto,
     )
 
     graph = build_graph(client, repo, config, brain=brain, rag=rag)
     final = graph.invoke(initial)
 
     if isinstance(final, SessionState):
-        return final
-    return SessionState(**{k: v for k, v in final.items() if k in SessionState.__dataclass_fields__})
+        result = final
+    else:
+        result = SessionState(
+            **{k: v for k, v in final.items() if k in SessionState.__dataclass_fields__}
+        )
+
+    # Pull cumulative cache stats off the client so the dashboard sees them.
+    result.cache_read_tokens = client.total_cache_read_tokens
+    result.cache_creation_tokens = client.total_cache_creation_tokens
+    return result
