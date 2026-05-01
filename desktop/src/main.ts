@@ -212,6 +212,8 @@ async function loadProject(): Promise<void> {
     projectStatus.textContent = snapshot.brain_exists
       ? "Brain ready"
       : "Brain not initialized";
+    const brandH1 = document.querySelector<HTMLHeadingElement>(".brand h1")!;
+
     appendChat("system", statusSummary(snapshot));
     await restartTerminal();
   } catch (error) {
